@@ -21,7 +21,7 @@ class MemberService:
                 print(f"시스템에 현재 등록된 회원수는 {count}명 입니다. ")
 
         except : # 예외발생 문구
-            print("MemberServie.load()메서드 오류발생....")
+            print("MemberService.load()메서드 오류발생....")
 
         finally: # 항상 출력되는 코드
             print("데이터베이스 접속 종료됨....")
@@ -57,7 +57,7 @@ class MemberService:
                 else:
                     print("아이디 또는 비밀번호가 틀렸습니다.")
         except : # 예외발생 문구
-            print("MemberServie.login()메서드 오류발생....")
+            print("MemberService.login()메서드 오류발생....")
         finally:
             conn.close()
 
@@ -113,7 +113,6 @@ class MemberService:
             print("로그인 후 이용 가능합니다.")
             return
 
-
         member = Session.login_member
         print(f"내정보확인 : {member}") # Member.__str__()
         print("\n[내 정보 수정]\n1. 이름 변경  2. 비밀번호 변경 3. 계정비활성 및 탈퇴 0. 취소")
@@ -138,7 +137,7 @@ class MemberService:
                 sql = "UPDATE members SET name = %s, password = %s WHERE id = %s"
                 cursor.execute(sql, (new_name, new_pw, member.id))
                 conn.commit()
-
+                # SET : 이 컬럼 값을 이렇게 바꿔라” 라는 뜻
                 # 메모리(세션) 정보도 동기화
                 member.name = new_name
                 member.pw = new_pw

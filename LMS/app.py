@@ -6,11 +6,22 @@
 # static, templates 폴더 필수 (프론트용 파일 모이는 곳)
 # static : 정적파일을 모아 놓음 (html, css, js)
 # templates : 동적파일을 모아 놓음 (crud 화면, 레이아웃, index 등....)
-from flask import Flask, render_template, request, redirect, url_for, session
-#                플라스크   프론트연결       요청,응답   주소전달    주소생성   상태저장소
-from LMS.common import Session
+import json
+from uuid import uuid4
+
+from flask import Flask, render_template, request, redirect, url_for, session, send_from_directory, make_response
+#                플라스크   프론트연결       요청,응답   주소전달  주소생성   상태저장소
+from LMS.common.session import Session
+from LMS.domain.Board import Board
+from LMS.domain.Score import Score
+from LMS.domain.item import Item
+from LMS.service import *
+
+import os
 
 app = Flask(__name__)
+
+# 세션을 사용하기 위해 보안키 설정 (아무 문자열이나 입력)
 app.secret_key = 'your_secret_key_here'
 # 세션을 사용하기 위해 보안키 설정 (아무 문자열이나 입력)
 # RuntimeError: The session is unavailable because no secret key was set.
@@ -29,7 +40,7 @@ def login():
 
     # login.html에서 action="/login" method="POST"처리용 코드
     # login.html에서 넘어온 폼 데이터는 uid / upw
-    uid = request.form.get('uid') # 요청한  폼내용을 가져옴
+    uid = request.form.get('uid') # 요청한 폼내용을 가져옴
     upw = request.form.get('upw') # request  form  get
     # print("/login에서 넘어온 폼 데이터 출력 테스트 ")
     # print(uid, upw)
@@ -38,7 +49,7 @@ def login():
     conn = Session.get_connection() # 교사용 db에 접속용 객체
     try: # 예외발생 가능성 있음
         with conn.cursor() as cursor: # db에 커서객체 사용
-            # 1회원 정보 조회
+            # 1. 회원 정보 조회
             sql = "SELECT id, name, uid, role  \
             FROM members WHERE uid = %s AND password = %s"
             #                  uid가 동일 &  pwd가 동일
@@ -47,10 +58,13 @@ def login():
             user = cursor.fetchone() # 쿼리 결과 1개를 가져와 user 변수에 넣음
 
             if user:
+                # 2. 로그인 성공: 세션에 사용자 정보 저장
                 # 찾은 계정이 있으면 브라우져의 세션영역에 보관한다.
                 session['user_id'] = user['id'] # 계정일련번호(회원번호)
                 session['user_name'] = user['name'] # 계정이름
                 session['user_uid'] = user['uid']  # 계정로그인명
+
+                # 이제 DB에서 'role'을 가져왔으니 에러 없이 잘 들어갈 겁니다.
                 session['user_role'] = user['role']  # 계정권한
                 # 세션에 저장 완료
                 # 브라우저에서 f12번 누르고 애플리케이션 탭에서 쿠키 항복에 가면 session객체가 보임
@@ -78,7 +92,7 @@ def join(): # http://localhost:5000/ get메서드(화면출력) post(화면폼�
     # POST 메서드 인 경우 (폼으로 데이터가 넘어올때 처리)
 
     uid = request.form.get('uid')
-    password = request.form.get('password')
+    password = request.form.get('password') # 컬럼명 password에 맞춤
     name = request.form.get('name') # 폼에서 넘어온 값을 변수에 넣음
 
     conn = Session.get_connection() # db에 연결
@@ -110,12 +124,15 @@ def member_edit():
 
     # 있으면 db 연결  시작!
     conn = Session.get_connection()
-    try:
-        with conn.cursor() as cursor:
-            if request.method == 'GET':
+    try: # 혹시 에러 나면 대비하려고 쓰는 구조
+        with conn.cursor() as cursor: # cursor = SQL 실행하는 도구 with = 작업 끝나면 자동 정리
+            if request.method == 'GET': # 사용자가 수정 페이지에 처음 들어왔을 때 (GET = 화면 보여달라)
                 # 기존 정보 불러오기
                 cursor.execute("SELECT * FROM members WHERE id = %s", (session['user_id'],))
+                # 로그인한 사용자의 정보를 가져와라
+                # members 테이블에서 id가 현재 로그인한 사람과 같은 데이터
                 user_info = cursor.fetchone()
+                # 조회된 결과 한 줄 가져오기
                 return render_template('member_edit.html',user = user_info)
                 #                      가장 중요한 포인트   get요청시 페이지    객체 전달용 코드
 
@@ -133,8 +150,6 @@ def member_edit():
             conn.commit()
             session['user_name'] = new_name # 세션 이름 정보도 갱신
             return"<script>alert('정보가 수정되었습니다.');location.href='/mypage';</script>"
-
-
 
     except Exception as e: # 예외발생시 실행문
         print(f"회원수정 에러:{e}")
@@ -168,9 +183,701 @@ def mypage():
 
     finally:
         conn.close()
+####################### 회원 CRUD END #######################################
+
+######################## 게시판 CRUD #########################################
+
+# 1. 게시판 목록 조회
+@app.route('/board') # http://localhost:5000/board
+def board_list():
+    conn = Session.get_connection()
+    try:
+        with conn.cursor() as cursor:
+            # 작성자 이름을 함께 가져오기 위해 JOIN 사용
+            sql = """
+                SELECT b.*, m.name as writer_name 
+                FROM boards b 
+                JOIN members m ON b.member_id = m.id 
+                ORDER BY b.id DESC
+            """
+            # b.* → boards 테이블의 모든 컬럼 | m.name → members 테이블의 name 컬럼 | as writer_name → 이름을 writer_name으로 바꿔서 가져오기
+            # b.member_id = m.id 이 값이 같은 것끼리 묶어라 boards에는 작성자 번호만 있음 이름이 필요해서 members테이블과 연결함
+            cursor.execute(sql)
+            rows = cursor.fetchall() # 조회된 결과를 전부 가져오기
+            boards = [Board.from_db(row) for row in rows] # from LMS.domain import Board
+            # rows 안에 있는 row 하나씩 꺼내서 Board.from_db(row) 실행하고 그 결과들을 리스트로 만들어라
+            return render_template('board_list.html', boards=boards)
+            #      화면 보여줌        boards=boards-> HTML에 boards라는 이름으로 데이터 전달
+    finally:
+        conn.close()
+
+# 2. 게시글 자세히 보기
+@app.route('/board/view/<int:board_id>') # http://localhost:5000/board/view/99(게시물번호)
+def board_view(board_id):
+    conn = Session.get_connection()
+    try:
+        with conn.cursor() as cursor:
+            # JOIN을 통해 작성자 정보(name, uid)를 함께 조회
+            sql = """ 
+                SELECT b.*, m.name as writer_name, m.uid as writer_uid
+                FROM boards b
+                JOIN members m ON b.member_id = m.id
+                WHERE b.id = %s
+            """
+            # 작성자 이름 가져오고 이름을 writer_name으로 바꿔서 사용
+            # 작성자의 uid도 가져옴  writer_uid라는 이름으로 사용
+            # WHERE~ :  게시글 번호가 특정 값인 것만 가져와
+            cursor.execute(sql, (board_id,)) # %s 자리에 board_id 넣어서 실행 | id뒤에 ,있는 이유: 튜플 형태로 만들기 위해서
+            row = cursor.fetchone() # 결과 한 줄만 가져옴
+            print(row) # db에서 나온 dict타입 콘솔에 출력 테스트용
+            if not row:
+                return "<script>alert('존재하지 않는 게시글입니다.');history.back();</script>"
+
+            # Board 객체로 변환 (앞서 작성한 Board.py의 from_db 활용)
+            board = Board.from_db(row)
+            # DB에서 가져온 한 줄 데이터(row)를 Board 객체로 바꾸는 것
+
+            return render_template('board_view.html', board = board)
+            # board_view.html 화면 보여주는데 board 데이터를 같이 넘겨라
+    finally:
+        conn.close()
+
+@app.route('/board/write', methods=['GET','POST']) # http://localhost:5000/board/write
+def board_write():
+    # 1. 사용자가 '글쓰기' 버튼을 눌러서 들어왔을 때(화면 보여주기)
+    if request.method == 'GET':
+        # 로그인 체크 ( 로그인 안 했으면 글 못쓰게)
+        if 'user_id' not in session:
+            return '<script>alert("로그인 후 이용가능합니다."); location.href="/login";</script>'
+        # location : 현재 브라우저의 주소(URL) 정보 객체 href : 주소창에 있는 URL "/login" : 이동할 경로
+        return render_template('board_write.html')
+    # 2. 사용자가 '등록하기'버튼을 눌러서 데이터를 보냈을 때 (DB 저장)
+    elif request.method == 'POST': # <form action="/board/write"method=POST">
+        title = request.form.get('title')
+        content = request.form.get('content')
+        # 세션에 저장된 로그인 유저의 id (member_id)
+        member_id = session.get('user_id')
+
+        conn = Session.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                sql = "INSERT INTO boards (member_id, title, content) VALUES (%s, %s, %s)"
+                cursor.execute(sql, (member_id, title, content))
+                conn.commit()
+            return redirect(url_for('board_list')) # 저장 후 목록으로 이동
+        except Exception as e:
+            print(f"글쓰기 에러: {e}")
+            return "저장 중 에러가 발생했습니다."
+        finally:
+            conn.close()
+
+@app.route('/board/edit/<int:board_id>', methods=['GET','POST'])
+def board_edit(board_id): # URL에서 받은 board_id가 여기로 들어옴
+    conn = Session.get_connection() # 데이터베이스 연결
+    try:
+        with conn.cursor() as cursor: # SQL 실행할 도구 만들기
+            # 1. 화면 보여주기 (기존 데이터 코드)
+            if request.method == 'GET':
+                sql = "SELECT * FROM boards WHERE id = %s"
+                # boards 테이블에서 id가 board_id인 글 하나 가져오기
+                cursor.execute(sql, (board_id,))
+                row = cursor.fetchone()
+
+                if not row:
+                    return "<script>alert('존재하지 않는 게시글입니다.');history.back();</script>"
+
+                # 본인 확인 로직(필요시 추가)
+                if row['member_id'] != session.get('user_id'): # 게시글을 작성한 사람의 ID랑 현재 로그인한 사람의 ID가 다르다면?
+                    return "<script>alert('수정 권한이 없습니다.');history.back();</script>"
+                print(row) # 콘솔에 출력 테스트용
+                board = Board.from_db(row)
+                return render_template('board_edit.html', board = board)
+
+            #2. 실제 DB 업데이트 처리
+            elif request.method == 'POST':
+                title = request.form.get('title')
+                content = request.form.get('content')
+
+                sql = "UPDATE boards SET title = %s, content = %s WHERE id = %s"
+                #                      제목, 내용을 새 값으로 수정 수정할 해당 id의 게시글
+                cursor.execute(sql, (title, content, board_id))
+                # %s 자리에 순서대로 값 들어감
+                conn.commit()
+
+                return redirect(url_for('board_view',board_id = board_id))
+                #                                URL의 board_id 자리에 넣을 값의 이름
+    finally:
+        conn.close()
+
+@app.route('/board/delete/<int:board_id>') # int 정수 숫자만 들어옴 id= 번호
+def board_delete(board_id):
+    # 로그인 여부 확인 (필요시)
+    # if 'user_id' not in session:
+    #     return '<script>alert("로그인 후 이용 가능합니다."); location.href="/login"/</script>'
+
+    conn = Session.get_connection()
+    try:
+        with conn.cursor() as cursor:
+            # 본인 확인 로직을 추가하고 싶다면 WHERE member_id = %s 를 추가하세요.
+            sql = "DELETE FROM boards WHERE id = %s" # 저장된 테이블명 boards 사용
+            cursor.execute(sql, (board_id,)) # %s 자리에 board_id 값을 넣어서 실행 , -> 튜플 형태
+            conn.commit()
+
+            if cursor.rowcount > 0:
+                print(f"게시글 {board_id}번 삭제 성공")
+            else:
+                return "<script>alert('삭제할 게시글이 없거나 권한이 없습니다.');history.back();</script>"
+
+        return redirect(url_for('board_list'))
+    except Exception as e:
+        print(f"삭제 에러:{e}")
+        return "삭제 중 오류가 발생했습니다."
+    finally:
+        conn.close()
+########################## 게시판 CRUD END #####################################
+
+########################### 성적 CRUD 시작 ######################################
+# 주의사항: ROLE에 ADMIN과 MANAGER만 CUD를 제공한다.
+# 일반사용자는 ROLE이 USER이고 자신의 성적만 볼 수 있다.
+# ('/score/add') 여기서 /는 URL 경로의 시작 의미
+
+# @app.route('/score/add')
+# def score_add():
+#     # 관리자/매니저 권한 체크
+#     if session.get('user_role') not in ('admin','manager'):
+#         return "<script>alert('권한이 없습니다.');history.back();</script>"
+#
+#     #URL 파라미터 (?uid=abc&name=홍길동) 받기
+#     target_uid = request.args.get('uid')
+#     target_name = request.args.get('name')
+#
+#     return render_template('score_form.html',target_uid = target_uid,target_name = target_name)
+
+@app.route('/score/add') # HTTP://localhost:5000/score/add?uid=test1&name=test1
+def score_add():
+    if session.get('user_role') not in ('admin','manager'):
+    #  현재 로그인한 사용자의 권한    일반 사용자 or 로그인 안한 사람
+        return "<script>alert('권한이 없습니다.');history.back();</script>"
+    #                                    history.back() 이전 페이지로 돌아감
+    # request.args는 URL을 통해서 넘어오는 값 주소뒤에 ?K=V&K=V ~~~~ GET 방식으로 URL에 붙어서 온 값들
+    target_uid = request.args.get('uid')  #조회, 링크 이동
+    target_name = request.args.get('name')
+
+    conn = Session.get_connection()
+    try:
+        with conn.cursor() as cursor:
+            # 1. 대상 학생의 id찾기
+            cursor.execute("SELECT id FROM members WHERE uid = %s",(target_uid,))
+            student = cursor.fetchone()
+
+            # 2. 기존 성적이 있는지 조회
+            existing_score = None
+            if student:
+                cursor.execute("SELECT * FROM scores WHERE member_id = %s",(student['id'],))
+                row = cursor.fetchone()
+                print(row) # 테스트용 코드로 dict 타입으로 콘솔 출력
+                if row:
+                    # 기존에 만든 Score.from_db 활용
+                    existing_score = Score.from_db(row)
+                    # 위쪽에 객체 로드 처리 : from LMS.domain import Board, Score
+
+            return render_template('score_form.html',
+                                   target_uid = target_uid,
+                                   target_name = target_name,
+                                   score = existing_score)     # score 객체 전달
+
+    finally:
+        conn.close()
+
+@app.route('/score/save',methods=['POST'])
+def score_save():
+    if session.get('user_role') not in ('admin','manager'):
+        return "권한 오류", 403
+        # 웹페이지에 오류 페이지로 교체
+
+    # 폼 데이터 수집
+    target_uid = request.form.get('target_uid')
+    kor = int(request.form.get('korean',0))
+    eng = int(request.form.get('english',0))
+    math = int(request.form.get('math',0))
+
+    conn = Session.get_connection()
+    try:
+        with conn.cursor() as cursor:
+            # 1. 대상 학생의 id(PK) 가져오기 -> 학생의 번호를 가져옴
+            cursor.execute("SELECT id FROM members WHERE uid = %s",(target_uid,))
+            student = cursor.fetchone()
+            print(student) # 학번 출력
+            if not student:
+                return "<script>alert('존재하지 않는 학생입니다.');history.back();</script>"
+
+            # 2. Score 객체 생성 (계산 프로퍼티 활용)
+            temp_score = Score(member_id=student['id'],kor=kor,eng=eng,math=math)
+            #            __init__ 를 활용하여 객체 생성
+            # 3. 기존 데이터가 있는지 확인
+            cursor.execute("SELECT id FROM scores WHERE member_id = %s",(student['id'],)) # 학번
+            is_exist = cursor.fetchone() # 성적이 있으면 id가 나오고 없으면 None 처리
+
+            if is_exist:
+                # UPDATE 실행
+                sql = """
+                    UPDATE scores SET korean=%s, english=%s, math=%s, 
+                                      total=%s, average=%s, grade=%s  
+                    WHERE member_id = %s
+                """
+                cursor.execute(sql,(temp_score.kor, temp_score.eng, temp_score.math,
+                                    temp_score.total, temp_score.avg, temp_score.grade,
+                                    student['id']))
+            else:
+                # INSERT 실행
+                sql = """
+                    INSERT INTO scores(member_id, korean, english, math, total, average, grade)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """
+                cursor.execute(sql,(student['id'], temp_score.kor, temp_score.eng, temp_score.math,
+                                    temp_score.total, temp_score.avg, temp_score.grade))
+
+            conn.commit()
+            return f"<script>alert('{target_uid} 학생 성적 저장 완료!');location href '/score/list';</script>"
+    finally:
+        conn.close()
 
 
-@app.route('/') # url 생성용 코드 http://localhost:5000/ or http://192.168.0.???:5000
+@app.route('/score/list') # http://localhost:5000/score/list -> GET방식
+def score_list():
+    # 1. 권한 체크 (관리자나 매니저만 볼 수 있게 설정)
+    if session.get('user_role') not in ('admin','manager'):
+        return "<script>alert('권한이 없습니다.');history;back();</script>"
+
+    conn = Session.get_connection()
+    try:
+        with conn.cursor() as cursor:
+            # 2. JOIN을 사용하여 학생 이름(name)과 성적 데이터를 함께 조회
+            # 성적이 없는 학생은 제외하고, 성적이 있는 학생들만 총점 순으로 정렬
+            sql = """
+                SELECT m.name, m.uid, s.* FROM scores s
+                JOIN members m ON s.member_id = m.id
+                ORDER BY s.total DESC
+            """
+            cursor.execute(sql)
+            datas = cursor.fetchall()
+            print(f"sql 결과 테스트: {datas}")
+
+            # 3. DB에서 가져온 딕셔너리 리스트를 Score 객체 리스트로 변환
+            score_objects = [] # 빈 리스트 만든 이유: 나중에 데이터를 하나씩 넣으려고
+            for data in datas: # datas 안에 들어있는 값을 하나씩 꺼내서 반복하겠다는 뜻
+                # Score 클래스에 정의하신 from_db 활용
+                s = Score.from_db(data) # 직렬화(dict타입을 -> 객체로 만듬)
+                # 객체에 없는 이름(name) 정보는 수동으로 살짝 넣어주기 (join에서 만든 값 사용)
+                s.name = data['name']
+                s.uid = data['uid'] # JOIN 결과로 name, uid가 같이 옴 /객체에 동적으로 속성을 추가
+                score_objects.append(s) # 객체를 리스트에 넣음
+
+        return render_template('score_list.html',scores=score_objects)
+        #                       프론트 화면 ui에                    성적이 담긴 리스트 객체를 전달함 !
+    finally:
+        conn.close()
+# @app.route('/score/members')
+# def score_member_list():
+#     # 관리자나 매니저만 접근 가능
+#     if session.get('user_role') not in ('admin','manager'):
+#         return "<script>alert('권한이 없습니다.');history;back();</script>"
+#
+#     conn = Session.get_connection()
+#     try:
+#         with conn.cursor() as cursor:
+#             # 일반 유저(student)들만 조회
+#             sql = "SELECT id,uid,name FROM members WHERE role ='user' AND active = 1"
+#             cursor.execute(sql)
+#             students = cursor.fetchall()
+#             return render_template('score_member_list.html',students=students)
+#     finally:
+#         conn.close()
+
+@app.route('/score/members')
+def score_members():
+    if session.get('user_role') not in ('admin','manager'):
+        return "<script>alert('권한이 없습니다.');history.back();</script>"
+
+    conn = Session.get_connection()
+    try:
+        with conn.cursor() as cursor:
+             # LEFT JOIN을 통해 성적이 있으면 s.id 가 숫자로, 없으면 NULL로 나옵니다.
+            sql = """
+                SELECT m.id, m.uid, m.name, s.id AS score_id, s.created_at
+                FROM members m 
+                LEFT JOIN scores s ON m.id = s.member_id 
+                WHERE m.role = 'user' 
+                ORDER BY m.name ASC
+            """
+             # LEFT 기준 = members/members는 전부 가져오고
+             # scores는 있으면 붙이고, 없으면 NULL
+             # 학생 전체 목록과 성적 여부도 같이 보여줌 없으면 NULL 처리
+            cursor.execute(sql)
+            members = cursor.fetchall()
+            return render_template('score_member_list.html',members=members)
+    finally:
+        conn.close()
+
+@app.route('/score/my') # http://localhost:5000/score/my -> GET방식
+def score_my():
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+
+    conn = Session.get_connection()
+    try:
+        with conn.cursor() as cursor:
+            # 내 ID로만 조회
+            sql = "SELECT * FROM scores WHERE member_id = %s"
+            cursor.execute(sql,(session['user_id'],))
+            row = cursor.fetchone()
+            print(row) # dict타입으로 결과물 들어옴
+            # score 객체로 변환 (from_db 활용)
+            score = Score.from_db(row) if row else None
+
+            return render_template('score_my.html',score=score)
+    finally:
+        conn.close()
+
+########################### 성적 CRUD END ########################################
+############################ 파일게시판 CRUD #######################################
+
+# 파일처리용 게시판의 특징
+# 1. 파일업로드 / 다운로드가 가능!
+# 2. 단일 파일 / 다중파일 업로드 처리
+# 3. 서비스 패키지를 활용
+## 4. /upload라는 폴더를 사용하겠다. / 용량제한 16MB
+# 5. 파일명 중복 방지용 코드 활용
+# 6. db에서 부모객체가 삭제되면 자식 객체도 삭제되게 cascade 처리함!
+
+UPLOAD_FOLDER = 'uploads/'
+# 폴더가 없으면 자동 생성
+if not os.path.exists(UPLOAD_FOLDER): # import os 상단에 추가
+    os.makedirs(UPLOAD_FOLDER)
+    # 폴더 생성용 코드 os.makedirs(이름)
+
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+# 최대 업로드 용량 제한 (예:16MB)
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
+# Flask 앱의 설정값 저장 공간 [클라이언트가 서버로 보낼 수 있는 요청 데이터의 최대 크기]
+# 16 * 1024 * 1024 byte = 16MB | 컴퓨터는 MB 단위를 직접 이해 못해서 byte만 이해
+# bit -> 0,1
+# 1byte -> 8bit -> 0~255 (256개)
+# 1KB -> 1024byte
+# 1MB -> 1024KB
+# 1GB -> 1024MB
+# 1TB -> 1024GB
+# 1PB -> 1024TB
+# 1EB -> 1024PB
+
+
+@app.route('/board/my')
+def board_my_list():
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+
+    conn = Session.get_connection()
+    try:
+        with conn.cursor() as cursor:
+            # 내가 작성한 글만 최신순으로 조회
+            sql = "SELECT * FROM boards WHERE member_id = %s ORDER BY created_at DESC"
+            cursor.execute(sql, (session['user_id'],))
+            my_posts = cursor.fetchall()
+
+            return render_template('board_my_list.html', posts=my_posts)
+    finally:
+        conn.close()
+
+
+#  -- 1. 게시글 본문 테이블
+# CREATE TABLE posts (
+    # id INT AUTO_INCREMENT PRIMARY KEY,
+    # member_id INT NOT NULL,           -- 작성자 (members 테이블 외래키)
+    # title VARCHAR(200) NOT NULL,
+    # content TEXT NOT NULL,
+    # view_count INT DEFAULT 0,         -- 조회수 추가
+    # created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    # updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    # FOREIGN KEY (member_id) REFERENCES members(id) ON DELETE CASCADE
+# );
+
+# -- 2. 첨부파일 관리 테이블
+# CREATE TABLE attachments (
+    # id INT AUTO_INCREMENT PRIMARY KEY,
+    # post_id INT NOT NULL,             -- 어떤 게시글의 파일인지
+    # origin_name VARCHAR(255) NOT NULL, -- 사용자가 올린 실제 파일명
+    # save_name VARCHAR(255) NOT NULL,   -- 서버에 저장된 고유 파일명 (중복방지)
+    # file_path VARCHAR(500) NOT NULL,   -- 저장된 경로
+    # file_size INT,                    -- 파일 용량(Byte)
+    # created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    # FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE
+# );
+
+# 단일 파일 게시글 쓰기 (GET: 폼 보여주기, POST: 저장 처리)
+# @app.route('/filesboard/write', methods=['GET','POST'])
+# def filesboard_write():
+#     if 'user_id' not in session:
+#         return redirect(url_for('login'))  # url_for('함수이름') = 그 함수의 주소 만들어줌
+#     # 로그인한 사람 정보 저장한 공간에 user_id가 없다면 login으로 돌아가라
+#     if request.method == 'POST': # 사용자가 글 작성 버튼을 눌러서 데이터 보냈을 때만 실행
+#         title = request.form.get('title') #사용자가 입력한 제목 가져오는 코드
+#         content = request.form.get('content')
+#         # 핵심 : getlist를 사용해야 리스트 형태로 가져옵니다.
+#         files = request.files.getlist('file')
+#
+#         if PostService.save_post(session['user_id'], title, content, file):
+#             return "<script>alert('게시글이 등록되었습니다.');location.href='/filesboard';</script>"
+#         else:
+#             return"<script>alert('등록 실패');history.back();</script>"
+#                                             # 이전 페이지로 돌아감
+#     return render_template('filesboard_write.html')
+
+# 다중 파일 처리용
+@app.route('/filesboard/write', methods=['GET','POST'])
+def filesboard_write():
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+
+    if request.method == 'POST':
+        title = request.form('title')
+        content = request.form.get('content')
+        #  핵심: getlist를 사용해야 리스트 형태로 가져옵니다.
+        files = request.files.getlist('files') # 다중 파일 가져오기
+
+        if PostService.save_post(session['user_id'], title, content, files):
+            return "<script>alert('개시글이 등록되었습니다.');location href '/filesboard';</script>"
+        else:
+            return "<script>alert('등록 실패');history.back();</script>"
+
+    return render_template('filesboard_write.html')
+
+    # GET 요청 시 기존 데이터 로드
+    post, files = PostService.get_post_detail(post_id)
+    if post['member_id'] != session['user_id']:
+        return "<script>alert('권한이 없습니다.'); history.back();</script>"
+
+    return render_template('filesboard_edit.html', post=post, files=files)
+
+@app.route('/filesboard/delete/<int:post_id>')
+def filesboard_delete(post_id):
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+
+    # 삭제 전 작성자 확인을 위해 정보 조회
+    post, _ = PostService.get_post_detail(post_id)
+    # _은 리턴값을 사용하지 않겠다 라는 관례적인 표현 (_) 사용하지 않는 변수
+
+    if not post:
+        return "<script>alert('이미 삭제된 게시글입니다.'); location.href='/filesboard';</script>"
+
+    # 본인 확인 (또는 관리자 권한)
+    if post['member_id'] != session['user_id'] and session.get('user_role') != 'admin':
+        return "<script>alert('삭제 권한이 없습니다.'); history.back();</script>"
+
+    if PostService.delete_post(post_id):
+        return "<script>alert('성공적으로 삭제되었습니다.'); location.href='/filesboard';</script>"
+    else:
+        return "<script>alert('삭제 중 오류가 발생했습니다.'); history.back();</script>"
+
+# 파일 게시판 목록
+@app.route('/filesboard')
+def filesboard_list():
+    posts = PostService.get_posts() # 데이터베이스에서 게시글들을 가져오는 코드
+    return render_template('filesboard_list.html', posts=posts)
+    # get_posts() 역할: DB 접속, 게시글 전체 조회, 결과를 리스트로 반환, html에서 쓸 이름 = 방금 가져온 데이터
+    # posts=posts : html 파일에 posts라는 이름으로 데이터 넘겨준다
+
+# 파일 게시판 상세 보기
+@app.route('/filesboard/view/<int:post_id>') # <int:post_id> : 주소에 숫자를 받겠다
+def filesboard_view(post_id):
+    post, files = PostService.get_post_detail(post_id)
+    # 해당 게시글의 글 정보 (제목, 내용, 작성자 등) 첨부파일 목록을 DB에서 가져오는 것
+    if not post:
+        return "<script>alert('해당 게시글이 없습니다.'); location.href='/filesboard';</script>"
+    return render_template('filesboard_view.html', post=post, files=files)
+    # 상세보기 HTML에 데이터 넘겨서 화면 출력
+
+# send_from_directory 사용하여 자료 다운로드 가능
+@app.route('/download/<path:filename>') # URL에서 파일 이름을 받겠다는 뜻
+def download_file(filename):
+    # 파일이 저장된 폴더(uploads)에서 파일을 찾아 전송합니다.
+    # 프론트 <a href="{{ url_for('download_file', filename=file.save_name) }}" ...> 이부분 처리용
+    # filename은 서버에 저장된 save_name입니다.
+    # 브라우저가 다운로드할 때 보여줄 원본 이름을 쿼리 스트링으로 받거나 DB에서 가져와야 합니다.
+    origin_name = request.args.get('origin_name')
+    # URL 뒤에 붙는 추가 정보를 가져옴
+    return send_from_directory('uploads/', filename, as_attachment=True, download_name=origin_name)
+    # from flask import send_from_directory 필수
+    # 'uploads/' → 파일이 저장된 폴더 filename → 서버에 저장된 실제 파일 이름
+    # as_attachment=True → 브라우저에서 바로 열지 말고 다운로드 하게 함
+    # download_name=origin_name → 사용자가 받을 때 보이는 파일 이름
+    # return send_from_directory('uploads/', filename)는 브라우져에서 바로 열어버림
+    # as_attachment=True 로 하면 파일 다운로드 창을 띄움
+    # 저장할 파일명은 download_name=origin_name 로 지정
+
+#####################################파일upload 게시판 end ################################
+##################################################################################################
+# 1. 상품 이미지 전용 경로 설정
+ITEM_UPLOAD_FOLDER = os.path.join(app.config['UPLOAD_FOLDER'], 'item')
+
+# 폴더가 없으면 자동 생성 (uploads/item)
+if not os.path.exists(ITEM_UPLOAD_FOLDER):
+    os.makedirs(ITEM_UPLOAD_FOLDER)
+
+product_service = ProductService()
+
+@app.route('/items/register', methods=['GET', 'POST'])
+def register_item():
+    # 1. POST 방식: 실제 등록 로직 처리
+    if request.method == 'POST':
+        # 이미지 파일 처리
+        files = request.files.getlist('images')
+        image_filenames = []
+        ITEM_UPLOAD_FOLDER = os.path.join(app.config['UPLOAD_FOLDER'], 'item')
+
+        for file in files:
+            if file and file.filename:
+                filename = f"item_{uuid4().hex}_{file.filename}"
+                file_path = os.path.join(ITEM_UPLOAD_FOLDER, filename)
+                file.save(file_path)
+                image_filenames.append(f"item/{filename}")
+
+        # 서비스 호출 (Item 객체 생성 및 DB 저장)
+        new_item = ProductService.create_item_from_form(request.form)
+        success = product_service.register_product(new_item, image_filenames)
+
+        if success:
+            return redirect(url_for('item_list'))
+        else:
+            return "상품 등록에 실패했습니다.", 500
+
+    # 2. GET 방식: 등록 폼 화면 보여주기
+    # templates/item/register.html 경로를 사용합니다.
+    return render_template('item/register.html', categories=Item.CATEGORIES)
+
+
+@app.route('/items')
+def item_list():
+    """상품 목록 페이지"""
+    # 1. ProductService의 정적 메서드를 호출하여 상품 리스트를 가져옵니다.
+    # (대표 이미지 경로인 main_image가 포함된 Item 객체 리스트입니다.)
+    items = product_service.get_all_products()
+
+    # 2. 미리 만들어둔 상품 목록 템플릿으로 데이터를 전달합니다.
+    return render_template('item/list.html', items=items)
+
+# 현재 HTML은 /uploads/item/파일명.jpg를 요청하고 있습니다.
+# 하지만 Flask는 기본적으로 static 폴더 외에는 보안상 접근을 차단합니다.
+# 위와 같이 @app.route('/uploads/<path:filename>')를 정의해 줘야만,
+# Flask가 "아, /uploads/로 시작하는 요청은 uploads 폴더 안에서 파일을 찾아 보내주라는 거구나!"라고 이해합니다.
+
+@app.route('/uploads/<path:filename>')
+def serve_uploads(filename):
+    # 실제 파일이 들어있는 폴더 경로 (프로젝트 루트의 uploads 폴더)
+    upload_path = os.path.join(os.getcwd(), 'uploads')
+    return send_from_directory(upload_path, filename)
+
+
+@app.route('/items/<int:item_id>')
+def item_detail(item_id):
+    """상품 상세 페이지"""
+    item = ProductService.get_product_by_id(item_id)
+
+    if not item:
+        return "상품을 찾을 수 없습니다.", 404
+
+    return render_template('item/detail.html', item=item)
+
+##########################################################################################################
+# 장바구니는 쿠키를사용 한다. (쿠키는 브라우져에 저장되는 데이터)
+@app.route('/cart/add/<int:item_id>', methods=['POST'])
+def add_to_cart(item_id):
+    quantity = int(request.form.get('quantity', 1))
+
+    # 1. 기존 쿠키에서 장바구니 가져오기
+    cart_cookie = request.cookies.get('cart')
+    if cart_cookie:
+        cart = json.loads(cart_cookie)  # 문자열을 딕셔너리로 변환
+    else:
+        cart = {}
+
+    # 2. 수량 업데이트
+    item_id_str = str(item_id)
+    if item_id_str in cart:
+        cart[item_id_str] += quantity
+    else:
+        cart[item_id_str] = quantity
+
+    # 3. 응답 객체 생성 및 쿠키 설정 from flask import make_response
+    res = make_response(f"<script>alert('장바구니에 담겼습니다!'); location.href='/items';</script>")
+
+    # JSON으로 다시 변환하여 쿠키에 저장 (유효기간 3일 설정)
+    res.set_cookie('cart', json.dumps(cart), max_age=60 * 60 * 24 * 3)
+
+    return res
+
+@app.route('/cart')
+def view_cart():
+    cart_cookie = request.cookies.get('cart')
+    cart_items = []
+    total_price = 0
+
+    if cart_cookie:
+        cart = json.loads(cart_cookie)
+        for item_id, quantity in cart.items():
+            # 이전에 만든 정적 메서드 활용
+            item = ProductService.get_product_by_id(int(item_id))
+            if item:
+                item.order_qty = quantity  # 수량 추가
+                item.subtotal = item.price * quantity
+                cart_items.append(item)
+                total_price += item.subtotal
+
+    return render_template('item/cart.html', cart_items=cart_items, total_price=total_price)
+
+@app.route('/cart/delete/<int:item_id>')
+def delete_cart_item(item_id):
+    cart_cookie = request.cookies.get('cart')
+    if not cart_cookie:
+        return redirect(url_for('view_cart'))
+
+    cart = json.loads(cart_cookie)
+    item_id_str = str(item_id)
+
+    if item_id_str in cart:
+        cart.pop(item_id_str)  # 해당 상품 삭제
+
+    res = make_response(redirect(url_for('view_cart')))
+    # 업데이트된 장바구니를 다시 쿠키에 저장
+    res.set_cookie('cart', json.dumps(cart), max_age=60 * 60 * 24 * 3)
+    return res
+
+# 쿠키 사용 시 주의점 (꿀팁)
+# 용량 제한: 쿠키는 보통 4KB가 한계입니다. 상품을 수백 개 담는 게 아니라면 충분하지만, 너무 많은 데이터를 담으면 안 됩니다.
+#
+# 보안: 쿠키는 사용자가 직접 값을 수정할 수 있습니다.
+# 그래서 **결제 단계(주문하기)**에서는 반드시 쿠키의 가격 정보를 믿지 말고,
+# DB에서 실제 가격을 다시 조회해서 계산해야 합니다. (우리가 만든 OrderService 방식처럼요!)
+############################################################################################################
+
+@app.route('/order/<int:item_id>', methods=['POST'])
+def place_order(item_id):
+    # 로그인 기능을 아직 안 붙였다면 임시로 member_id = 1 사용
+    # 실제로는 session.get('member_id') 등을 사용합니다.
+    member_id = 1
+    quantity = 1  # 상세페이지에서 넘겨받은 수량으로 대체 가능
+
+    success, message = OrderService.create_order(member_id, item_id, quantity)
+
+    if success:
+        # 주문 성공 시 주문 내역 페이지나 상품 목록으로 이동
+        return f"<script>alert('{message}'); location.href='/items';</script>"
+    else:
+        return f"<script>alert('{message}'); history.back();</script>"
+
+#########################################################################################
+
+@app.route('/') # url 생성용 코드 http://localhost:5000/ or http://192.168.0.???:5000 # /:메인페이지 (사이트 들어오면 제일먼저 호출되는 URL)
 def index():
     return render_template('main.html')
     # render_template 웹브라우저로 보낼 파일명
@@ -182,3 +889,6 @@ if __name__ == '__main__':
     # host='0.0.0.0' 누가요청하던 응답해라
     # port=5000 플라스크에서 사용하는 포트번호
     # debug=True 콘솔에서 디버그를 보겠다.
+
+#값없이 호출 redirect (url_for) / get으로 호출할때
+#render_template html에다가 값(객체)을 보낼때 framework 라고 보면됨

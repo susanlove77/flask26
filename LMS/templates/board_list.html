@@ -1,0 +1,39 @@
+{% extends 'layout.html' %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <h2 class="mb-4">자유 게시판</h2>
+        <table class="table table-hover">
+        <!--행 강조 효과(글자색 바뀜)-->
+            <thead class="table-dark">
+                <tr>
+                    <th>번호</th>
+                    <th>제목</th>
+                    <th>작성자</th>
+                    <th>날짜</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for b in boards %}
+                <tr>
+                    <td>{{ b.id }}</td>
+                    <td><a href="/board/view/{{ b.id }}" class="text-decoration-none text-dark">{{ b.title }}</a></td>
+                    <td>{{ b.writer_name }}</td>
+                    <td>{{ b.created_at.strftime('%Y-%m-%d') if b.created_at }}</td>
+                    <!--게시글 객체 b의 작성일/날짜를 문자열로 변환 created_at 값이 있을 때만 출력해라 -->
+                </tr>
+                {% endfor %}<!--데이터 반복 출력/ 반복문 종료-->
+            </tbody>
+        </table>
+        <div class="text-end">
+            <a href="/board/write" class="btn btn-primary">글쓰기</a>
+        </div>
+    </div>
+</div>
+{% endblock %} <!--템플릿 구조(큰 틀)-->
+
+<!--thead(table head)테이블 제목-->
+<!--tr(table row)테이블의 가로 한줄-->
+<!--td(table data): 실제 데이터 셀-->
+

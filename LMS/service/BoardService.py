@@ -31,17 +31,18 @@ class BoardService:
         print(f"{'번호':<5} | {'제목':<25} | {'작성자':<10} | {'작성일'}")
         print("-" * 60)
 
-        conn = Session.get_connection()
+        conn = Session.get_connection() # db 연결하는 곳
         try:
-            with conn.cursor() as cursor:
+            with conn.cursor() as cursor: # cursor를 잠깐 빌려 쓰고 자동 반납
                 # members 테이블과 JOIN하여 작성자 이름(name)을 가져옵니다.
                 sql = """
                          SELECT b.*, m.name FROM boards b
-                         JOIN members m ON b.member_id = m.id
-                         ORDER BY b.id DESC \
+                         JOIN members m ON b.member_id = m.id 
+                         ORDER BY b.id DESC \ 
                          """
-                cursor.execute(sql)
-                datas = cursor.fetchall()
+                # DESC : 내림차순 -> 최신 글이 위에 옴
+                cursor.execute(sql)  # sql 실행
+                datas = cursor.fetchall() # 실행결과를 전부 리스트로 가져옴
                 for data in datas:
                     # 날짜 형식 처리 (YYYY-MM-DD 형식으로 출력)
                     date_str = data['created_at'].strftime('%Y-%m-%d')

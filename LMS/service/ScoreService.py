@@ -12,7 +12,7 @@ class ScoreService:
         try:
             with conn.cursor() as cursor:
                 # 커서객체는 db연결 성공시 연결정보를 가지고 있음
-                cursor.execute("SELECT COUNT(*) as cnt FROM scores")
+                cursor.execute("SELECT COUNT(*) as cnt FROM scores") # scores 테이블에 행(row)이 총 몇 개인지 조회
                 # sql문 실행
                 count = cursor.fetchone()['cnt']
                 # 실행결과를 1개 가져와 count 변수에 넣음
@@ -66,6 +66,7 @@ class ScoreService:
                 # 1. 학생 존재 확인 (pk -> fk 에 대한 문제 해결용)
                 #  부모테이블에 자료가 있어야 자식 테이블에 자료를 넣는다.
                 cursor.execute("SELECT id, name FROM members WHERE uid = %s", (target_uid,))
+                #               uid가 target_uid인 회원의 id와 name을 조회
                 student = cursor.fetchone() # members테이블에 uid가 있으면 true / 없으면 false
 
                 if not student: # false일때
@@ -85,7 +86,7 @@ class ScoreService:
                 # 학생의 점수가 있으면????
                 if cursor.fetchone():  # 있으면 true 없으면 false
                     # UPDATE 로직
-                    sql = """
+                    sql = """  
                               UPDATE scores SET korean=%s, english=%s, math=%s, total=%s, average=%s, grade=%s
                               WHERE member_id = %s \
                           """

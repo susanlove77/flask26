@@ -1,5 +1,6 @@
 # oop 기반의 Member 객체용
-
+# oop: 객체 지향 프로그래밍 - 데이터 + 기능을 하나로 묶어서 다룸
+# AUTO_INCREMENT 데이터가 추가될 때 숫자를 자동으로 1씩 올려주는 기능
 class Member:
 
     def __init__(self, id, uid, pw, name, role="user", active=True):
@@ -9,6 +10,8 @@ class Member:
         self.name = name  # 이름
         self.role = role  # 권한
         self.active = active  # 활성화 여부
+        self.created_at = self.created_at
+
         # 사용법
         # member = Member("kkw","1234","김기원","user")
         # Member객체를 member변수에 넣음
@@ -28,7 +31,8 @@ class Member:
             pw=row.get('password'),  # password : 1111
             name=row.get('name'),    # name : 김기원
             role=row.get('role'),    # role : admin
-            active=bool(row.get('active')) # active : 1 -> True
+            active=bool(row.get('active')), # active : 1 -> True
+            created_at =  row.get('created_at')
         )
 
     def is_admin(self):   # role이 admin 인지 확인하는 메서드
@@ -36,3 +40,4 @@ class Member:
 
     def __str__(self): # member객체를 문자열로 출력할 때 사용(테스트용)
         return f"{self.name}({self.uid}:{self.pw}) [{self.role} ]"
+    # __str__ = 객체를 print 했을 때 보여줄 설명서
