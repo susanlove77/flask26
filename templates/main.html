@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <title>메인 화면</title>
+    <!--    -->
+    <link rel="stylesheet" as="style" crossorigin
+          href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css"/>
+    <link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../static/mainstyle.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body class="{% if not session.get('user_name') %}no-scroll{% endif %}">
+<div class="hero-container">
+    <div class="hero-overlay"></div>
+    <div class="hero-content">
+        <div class="button-group">
+            <span class="nav-title">세이프카</span>
+            <a href="/introduce" class="hero-btn">💡 사이트 소개</a>
+
+            {% if session.get('user_name') %}
+            <a href="{{ url_for('mypage') }}" class="hero-btn">👤 마이페이지</a>
+
+            <a href="{{ url_for('logout') }}" class="hero-btn"
+               style="border-color: rgba(255,255,255,0.3);">
+                🚪 로그아웃
+            </a>
+            {% else %}
+            <a href="{{ url_for('login') }}" class="hero-btn">
+                🔑 로그인
+            </a>
+            {% endif %}
+            
+            {% if not session.get('user_id') %}
+                <a href="/join" class="hero-btn btn-register">📝 회원가입</a>
+            {% endif %}
+            
+            <a href="/analyze/list" class="hero-btn btn-analysis">📊 분석 게시판</a>
+            <a href="/board/list" class="hero-btn">✍️ 문의 게시판</a>
+            <a href="/its/dashboard" class="hero-btn" style="border-color: #ffd700; color: #ffd700;">🛣️ ITS 모니터링</a>
+            
+            <a href="/webcam" class="hero-btn" style="background-color: rgba(0, 209, 178, 0.2); border-color: #00d1b2;">📷 웹캠 서비스</a>
+        </div>
+        <div class="hero-content">
+            {% if session.get('user_name') %}
+            <h1 class="welcome-title">
+                <span style="color: #00d1b2;">{{ session['user_name'] }}</span>님, 환영합니다!
+            </h1>
+            {% else %}
+            <h1 class="welcome-title" style="font-size: 3.5rem;">
+                로그인 후 이용해 주세요.
+            </h1>
+            <p style="color: rgba(255,255,255,0.7);
+            margin-bottom: 2rem;
+            letter-spacing: -1px;
+            text-align: center;
+            line-height: 1.8;">
+                <span style="color: #00d1b2;">세이프카</span>는 다양한 차종을 분석하여 편의성을 제공합니다. <br>
+                분석 서비스를 이용하시려면 로그인이 필요합니다.
+            </p>
+            {% endif %}
+            <div class="button-group">
+            </div>
+        </div>
+    </div>
+</div>
+</body>
